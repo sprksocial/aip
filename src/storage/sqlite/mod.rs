@@ -128,10 +128,7 @@ impl AuthorizationCodeStore for SqliteOAuthStorage {
         self.authorization_code_store.store_code(code).await
     }
 
-    async fn get_code(
-        &self,
-        code: &str,
-    ) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
+    async fn get_code(&self, code: &str) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
         self.authorization_code_store.get_code(code).await
     }
 
@@ -577,9 +574,7 @@ impl TransactionalStorage for SqliteOAuthStorage {
         .bind(&session.exchange_error)
         .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            StorageError::TransactionFailed(format!("Failed to store session: {}", e))
-        })?;
+        .map_err(|e| StorageError::TransactionFailed(format!("Failed to store session: {}", e)))?;
 
         // Commit the transaction
         tx.commit()
@@ -610,42 +605,58 @@ impl TransactionalStorage for SqliteOAuthStorage {
             .bind(code)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| {
-                StorageError::TransactionFailed(format!("Failed to get code: {}", e))
-            })?;
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to get code: {}", e)))?;
 
         let auth_code = match row {
             Some(row) => {
                 // Parse the authorization code
-                let created_at_str: String = row
-                    .try_get("created_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
+                let created_at_str: String = row.try_get("created_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get created_at: {}", e))
+                })?;
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| StorageError::InvalidData(format!("Invalid created_at: {}", e)))?
                     .with_timezone(&Utc);
 
-                let expires_at_str: String = row
-                    .try_get("expires_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get expires_at: {}", e)))?;
+                let expires_at_str: String = row.try_get("expires_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get expires_at: {}", e))
+                })?;
                 let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_at_str)
                     .map_err(|e| StorageError::InvalidData(format!("Invalid expires_at: {}", e)))?
                     .with_timezone(&Utc);
 
-                let used_int: i64 = row
-                    .try_get("used")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get used: {}", e)))?;
+                let used_int: i64 = row.try_get("used").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get used: {}", e))
+                })?;
                 let used = used_int != 0;
 
                 let auth_code = crate::oauth::types::AuthorizationCode {
-                    code: row.try_get("code").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    redirect_uri: row.try_get("redirect_uri").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    code_challenge: row.try_get("code_challenge").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    code_challenge_method: row.try_get("code_challenge_method").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code: row
+                        .try_get("code")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row
+                        .try_get("client_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row
+                        .try_get("user_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row
+                        .try_get("session_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    redirect_uri: row
+                        .try_get("redirect_uri")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row
+                        .try_get("scope")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge: row
+                        .try_get("code_challenge")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge_method: row
+                        .try_get("code_challenge_method")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row
+                        .try_get("nonce")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
                     created_at,
                     expires_at,
                     used,
@@ -658,7 +669,9 @@ impl TransactionalStorage for SqliteOAuthStorage {
                         .execute(&mut *tx)
                         .await
                         .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
-                    tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
                     return Ok(None);
                 }
 
@@ -778,18 +791,22 @@ impl TransactionalStorage for SqliteOAuthStorage {
         let consumed_token = match row {
             Some(row) => {
                 // Parse the refresh token
-                let created_at_str: String = row
-                    .try_get("created_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
+                let created_at_str: String = row.try_get("created_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get created_at: {}", e))
+                })?;
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| StorageError::InvalidData(format!("Invalid created_at: {}", e)))?
                     .with_timezone(&Utc);
 
-                let expires_at = if let Ok(expires_at_str) = row.try_get::<Option<String>, _>("expires_at") {
+                let expires_at = if let Ok(expires_at_str) =
+                    row.try_get::<Option<String>, _>("expires_at")
+                {
                     if let Some(expires_at_str) = expires_at_str {
                         Some(
                             chrono::DateTime::parse_from_rfc3339(&expires_at_str)
-                                .map_err(|e| StorageError::InvalidData(format!("Invalid expires_at: {}", e)))?
+                                .map_err(|e| {
+                                    StorageError::InvalidData(format!("Invalid expires_at: {}", e))
+                                })?
                                 .with_timezone(&Utc),
                         )
                     } else {
@@ -800,13 +817,27 @@ impl TransactionalStorage for SqliteOAuthStorage {
                 };
 
                 let refresh_token = crate::oauth::types::RefreshToken {
-                    token: row.try_get("token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    access_token: row.try_get("access_token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    token: row
+                        .try_get("token")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    access_token: row
+                        .try_get("access_token")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row
+                        .try_get("client_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row
+                        .try_get("user_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row
+                        .try_get("session_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row
+                        .try_get("scope")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row
+                        .try_get("nonce")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
                     created_at,
                     expires_at,
                 };
@@ -819,7 +850,9 @@ impl TransactionalStorage for SqliteOAuthStorage {
                             .execute(&mut *tx)
                             .await
                             .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
-                        tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                        tx.commit()
+                            .await
+                            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
                         return Ok(None);
                     }
                 }
@@ -877,7 +910,10 @@ impl TransactionalStorage for SqliteOAuthStorage {
 
         // Step 3: Store the new refresh token
         let rt_created_at_str = new_refresh_token.created_at.to_rfc3339();
-        let rt_expires_at_str = new_refresh_token.expires_at.as_ref().map(|dt| dt.to_rfc3339());
+        let rt_expires_at_str = new_refresh_token
+            .expires_at
+            .as_ref()
+            .map(|dt| dt.to_rfc3339());
 
         sqlx::query(
             r#"

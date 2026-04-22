@@ -21,10 +21,13 @@ pub async fn create_atp_backed_server(
     state: &AppState,
 ) -> std::result::Result<AtpBackedAuthorizationServer, Box<dyn std::error::Error + Send + Sync>> {
     // Create base OAuth authorization server
-    let base_auth_server = Arc::new(AuthorizationServer::new(
-        state.oauth_storage.clone(),
-        state.config.external_base.clone(),
-    ));
+    let base_auth_server = Arc::new(
+        AuthorizationServer::new(
+            state.oauth_storage.clone(),
+            state.config.external_base.clone(),
+        )
+        .with_supported_scopes(state.config.oauth_supported_scopes.normalized_strings()),
+    );
 
     // Use the identity resolver from state and create HTTP client for AtpOAuthServer
     let identity_resolver = state.identity_resolver.clone();

@@ -206,54 +206,33 @@ fn validate_and_convert_par_request(
 
     // Validate scope
     if let Some(ref requested_scope) = request.scope {
-        // Apply compat_scopes to normalize scope format before parsing
-        let normalized_requested_scope =
-            crate::oauth::scope_validation::compat_scopes(requested_scope);
-
-        // Parse requested scopes and convert to normalized strings for comparison
-        let parsed_requested =
-            atproto_oauth::scopes::Scope::parse_multiple_reduced(&normalized_requested_scope)
-                .map_err(|e| {
-                    OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
-                })?;
-
-        let requested_normalized: std::collections::HashSet<String> = parsed_requested
-            .iter()
-            .map(|s| s.to_string_normalized())
-            .collect();
-
-        let supported_normalized: std::collections::HashSet<String> = config
-            .oauth_supported_scopes
-            .as_ref()
-            .iter()
-            .map(|s| s.to_string_normalized())
-            .collect();
+        let parsed_requested = crate::oauth::scope_validation::parse_scope_set(requested_scope)?;
 
         // First, validate against server's supported scopes
-        if !requested_normalized.is_subset(&supported_normalized) {
+        if !parsed_requested
+            .normalized_scopes()
+            .is_subset(config.oauth_supported_scopes.normalized_strings())
+        {
             return Err(OAuthError::InvalidScope(
                 "One or more requested scopes are not supported by this server".to_string(),
             ));
         }
 
+        crate::oauth::scope_validation::validate_oauth_scope_requirements(
+            parsed_requested.known_scopes(),
+        )?;
+
         // Then, validate against client's allowed scopes
         if let Some(ref client_scope) = client.scope {
-            // Apply compat_scopes to client scope as well (from database)
-            let normalized_client_scope =
-                crate::oauth::scope_validation::compat_scopes(client_scope);
+            let parsed_client = crate::oauth::scope_validation::parse_scope_set(client_scope)
+                .map_err(|e| {
+                    OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
+                })?;
 
-            let parsed_client =
-                atproto_oauth::scopes::Scope::parse_multiple_reduced(&normalized_client_scope)
-                    .map_err(|e| {
-                        OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
-                    })?;
-
-            let allowed_normalized: std::collections::HashSet<String> = parsed_client
-                .iter()
-                .map(|s| s.to_string_normalized())
-                .collect();
-
-            if !requested_normalized.is_subset(&allowed_normalized) {
+            if !parsed_requested
+                .normalized_scopes()
+                .is_subset(parsed_client.normalized_scopes())
+            {
                 return Err(OAuthError::InvalidScope(
                     "Requested scope exceeds allowed scope".to_string(),
                 ));
@@ -664,6 +643,294 @@ mod tests {
             oauth_signing_keys: Default::default(),
             oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
                 "atproto transition:generic".to_string(),
+            )
+            .unwrap(),
+            dpop_nonce_seed: "seed".to_string(),
+            storage_backend: "memory".to_string(),
+            database_url: None,
+            redis_url: None,
+            enable_client_api: false,
+            client_default_access_token_expiration: "1d".to_string().try_into().unwrap(),
+            client_default_refresh_token_expiration: "14d".to_string().try_into().unwrap(),
+            admin_dids: "".to_string().try_into().unwrap(),
+            client_default_redirect_exact: "true".to_string().try_into().unwrap(),
+            atproto_client_name: "AIP OAuth Server".to_string().try_into().unwrap(),
+            atproto_client_logo: None::<String>.try_into().unwrap(),
+            atproto_client_tos: None::<String>.try_into().unwrap(),
+            atproto_client_policy: None::<String>.try_into().unwrap(),
+            internal_device_auth_client_id: "aip-internal-device-auth"
+                .to_string()
+                .try_into()
+                .unwrap(),
+        };
+
+        let result = validate_and_convert_par_request(&par_request, &client, &test_config);
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(error, OAuthError::InvalidScope(_)));
+        }
+    }
+
+    #[test]
+    fn test_par_request_permission_set_scope() {
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        let par_request = PushedAuthorizationRequest {
+            response_type: "code".to_string(),
+            client_id: client.client_id.clone(),
+            client_secret: None,
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            request: None,
+            request_uri: None,
+            login_hint: None,
+            nonce: None,
+            subject: None,
+            client_assertion: None,
+            client_assertion_type: None,
+        };
+
+        let test_config = crate::config::Config {
+            version: "test".to_string(),
+            http_port: "3000".to_string().try_into().unwrap(),
+            http_static_path: "static".to_string(),
+            http_templates_path: "templates".to_string(),
+            external_base: "https://localhost".to_string(),
+            certificate_bundles: "".to_string().try_into().unwrap(),
+            user_agent: "test-user-agent".to_string(),
+            plc_hostname: "plc.directory".to_string(),
+            dns_nameservers: "".to_string().try_into().unwrap(),
+            http_client_timeout: "10s".to_string().try_into().unwrap(),
+            atproto_oauth_signing_keys: Default::default(),
+            oauth_signing_keys: Default::default(),
+            oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            )
+            .unwrap(),
+            dpop_nonce_seed: "seed".to_string(),
+            storage_backend: "memory".to_string(),
+            database_url: None,
+            redis_url: None,
+            enable_client_api: false,
+            client_default_access_token_expiration: "1d".to_string().try_into().unwrap(),
+            client_default_refresh_token_expiration: "14d".to_string().try_into().unwrap(),
+            admin_dids: "".to_string().try_into().unwrap(),
+            client_default_redirect_exact: "true".to_string().try_into().unwrap(),
+            atproto_client_name: "AIP OAuth Server".to_string().try_into().unwrap(),
+            atproto_client_logo: None::<String>.try_into().unwrap(),
+            atproto_client_tos: None::<String>.try_into().unwrap(),
+            atproto_client_policy: None::<String>.try_into().unwrap(),
+            internal_device_auth_client_id: "aip-internal-device-auth"
+                .to_string()
+                .try_into()
+                .unwrap(),
+        };
+
+        let auth_request =
+            validate_and_convert_par_request(&par_request, &client, &test_config).unwrap();
+
+        assert_eq!(
+            auth_request.scope,
+            Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_par_request_permission_set_query_form_scope() {
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        let par_request = PushedAuthorizationRequest {
+            response_type: "code".to_string(),
+            client_id: client.client_id.clone(),
+            client_secret: None,
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            request: None,
+            request_uri: None,
+            login_hint: None,
+            nonce: None,
+            subject: None,
+            client_assertion: None,
+            client_assertion_type: None,
+        };
+
+        let test_config = crate::config::Config {
+            version: "test".to_string(),
+            http_port: "3000".to_string().try_into().unwrap(),
+            http_static_path: "static".to_string(),
+            http_templates_path: "templates".to_string(),
+            external_base: "https://localhost".to_string(),
+            certificate_bundles: "".to_string().try_into().unwrap(),
+            user_agent: "test-user-agent".to_string(),
+            plc_hostname: "plc.directory".to_string(),
+            dns_nameservers: "".to_string().try_into().unwrap(),
+            http_client_timeout: "10s".to_string().try_into().unwrap(),
+            atproto_oauth_signing_keys: Default::default(),
+            oauth_signing_keys: Default::default(),
+            oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            )
+            .unwrap(),
+            dpop_nonce_seed: "seed".to_string(),
+            storage_backend: "memory".to_string(),
+            database_url: None,
+            redis_url: None,
+            enable_client_api: false,
+            client_default_access_token_expiration: "1d".to_string().try_into().unwrap(),
+            client_default_refresh_token_expiration: "14d".to_string().try_into().unwrap(),
+            admin_dids: "".to_string().try_into().unwrap(),
+            client_default_redirect_exact: "true".to_string().try_into().unwrap(),
+            atproto_client_name: "AIP OAuth Server".to_string().try_into().unwrap(),
+            atproto_client_logo: None::<String>.try_into().unwrap(),
+            atproto_client_tos: None::<String>.try_into().unwrap(),
+            atproto_client_policy: None::<String>.try_into().unwrap(),
+            internal_device_auth_client_id: "aip-internal-device-auth"
+                .to_string()
+                .try_into()
+                .unwrap(),
+        };
+
+        let auth_request =
+            validate_and_convert_par_request(&par_request, &client, &test_config).unwrap();
+
+        assert_eq!(
+            auth_request.scope,
+            Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+        );
+    }
+
+    #[test]
+    fn test_par_request_rejects_permission_set_without_required_atproto_scope() {
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        let par_request = PushedAuthorizationRequest {
+            response_type: "code".to_string(),
+            client_id: client.client_id.clone(),
+            client_secret: None,
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            request: None,
+            request_uri: None,
+            login_hint: None,
+            nonce: None,
+            subject: None,
+            client_assertion: None,
+            client_assertion_type: None,
+        };
+
+        let test_config = crate::config::Config {
+            version: "test".to_string(),
+            http_port: "3000".to_string().try_into().unwrap(),
+            http_static_path: "static".to_string(),
+            http_templates_path: "templates".to_string(),
+            external_base: "https://localhost".to_string(),
+            certificate_bundles: "".to_string().try_into().unwrap(),
+            user_agent: "test-user-agent".to_string(),
+            plc_hostname: "plc.directory".to_string(),
+            dns_nameservers: "".to_string().try_into().unwrap(),
+            http_client_timeout: "10s".to_string().try_into().unwrap(),
+            atproto_oauth_signing_keys: Default::default(),
+            oauth_signing_keys: Default::default(),
+            oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
             )
             .unwrap(),
             dpop_nonce_seed: "seed".to_string(),

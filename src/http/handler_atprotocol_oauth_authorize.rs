@@ -70,11 +70,17 @@ pub async fn handle_oauth_authorize(
     {
         Ok(redirect_url) => Ok(Redirect::to(&redirect_url).into_response()),
         Err(e) => {
+            let (status, error_code) = match &e {
+                crate::errors::OAuthError::InvalidScope(_) => {
+                    (StatusCode::BAD_REQUEST, "invalid_scope")
+                }
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            };
             let error_response = json!({
-                "error": "server_error",
+                "error": error_code,
                 "error_description": e.to_string()
             });
-            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)))
+            Err((status, Json(error_response)))
         }
     }
 }
@@ -194,30 +200,33 @@ async fn process_authorization_query(
 
     // Validate scope against server's supported scopes for traditional OAuth requests
     if let Some(ref requested_scope) = request.scope {
-        // Parse into Scope objects and compare normalized strings to handle format differences
-        let parsed_requested = atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
-            .map_err(|e| serde_json::json!({
-                "error": "invalid_scope",
-                "error_description": format!("Invalid scope format: {}", e)
-            }))?;
+        let parsed_requested = crate::oauth::scope_validation::parse_scope_set(requested_scope)
+            .map_err(|e| {
+                serde_json::json!({
+                    "error": "invalid_scope",
+                    "error_description": e.to_string()
+                })
+            })?;
 
-        let requested_normalized: std::collections::HashSet<String> = parsed_requested
-            .iter()
-            .map(|s| s.to_string_normalized())
-            .collect();
-        let supported_normalized: std::collections::HashSet<String> = config
-            .oauth_supported_scopes
-            .as_ref()
-            .iter()
-            .map(|s| s.to_string_normalized())
-            .collect();
-
-        if !requested_normalized.is_subset(&supported_normalized) {
+        if !parsed_requested
+            .normalized_scopes()
+            .is_subset(config.oauth_supported_scopes.normalized_strings())
+        {
             return Err(serde_json::json!({
                 "error": "invalid_scope",
                 "error_description": "One or more requested scopes are not supported by this server"
             }));
         }
+
+        crate::oauth::scope_validation::validate_oauth_scope_requirements(
+            parsed_requested.known_scopes(),
+        )
+        .map_err(|e| {
+            serde_json::json!({
+                "error": "invalid_scope",
+                "error_description": e.to_string()
+            })
+        })?;
     }
 
     Ok((request, query))
@@ -332,6 +341,10 @@ mod tests {
     use crate::oauth::auth_server::AuthorizeQuery;
 
     fn create_test_config() -> crate::config::Config {
+        create_test_config_with_scopes("atproto transition:generic transition:email")
+    }
+
+    fn create_test_config_with_scopes(scopes: &str) -> crate::config::Config {
         crate::config::Config {
             version: "test".to_string(),
             http_port: "3000".to_string().try_into().unwrap(),
@@ -346,7 +359,7 @@ mod tests {
             atproto_oauth_signing_keys: Default::default(),
             oauth_signing_keys: Default::default(),
             oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
-                "atproto transition:generic transition:email".to_string(),
+                scopes.to_string(),
             )
             .unwrap(),
             dpop_nonce_seed: "seed".to_string(),
@@ -567,5 +580,79 @@ mod tests {
         if let Err(error) = result {
             assert_eq!(error["error"], "invalid_request");
         }
+    }
+
+    #[tokio::test]
+    async fn test_authorize_query_rejects_permission_set_without_required_atproto_scope() {
+        let storage = Arc::new(crate::storage::inmemory::MemoryOAuthStorage::new());
+        let query = AuthorizeQuery {
+            client_id: "test-client".to_string(),
+            redirect_uri: Some("https://example.com/callback".to_string()),
+            response_type: Some("code".to_string()),
+            scope: Some(
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ),
+            state: None,
+            code_challenge: None,
+            code_challenge_method: None,
+            request_uri: None,
+            login_hint: None,
+            nonce: None,
+            prompt: None,
+        };
+
+        let config = create_test_config_with_scopes(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+        );
+        let result = process_authorization_query(
+            query,
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
+            &config,
+        )
+        .await;
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert_eq!(error["error"], "invalid_scope");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authorize_query_accepts_query_form_permission_set_scope() {
+        let storage = Arc::new(crate::storage::inmemory::MemoryOAuthStorage::new());
+        let query = AuthorizeQuery {
+            client_id: "test-client".to_string(),
+            redirect_uri: Some("https://example.com/callback".to_string()),
+            response_type: Some("code".to_string()),
+            scope: Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+            state: None,
+            code_challenge: None,
+            code_challenge_method: None,
+            request_uri: None,
+            login_hint: None,
+            nonce: None,
+            prompt: None,
+        };
+
+        let config = create_test_config_with_scopes(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+        );
+        let (request, _) = process_authorization_query(
+            query,
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            request.scope,
+            Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+        );
     }
 }

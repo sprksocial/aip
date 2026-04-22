@@ -23,7 +23,6 @@ struct CreateSessionResponse {
     refresh_jwt: String,
 }
 
-
 /// Create a new app-password session using ATProtocol createSession XRPC
 ///
 /// This function authenticates with a PDS using an app-password and creates

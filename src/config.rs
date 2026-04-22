@@ -3,6 +3,7 @@
 use anyhow::Result;
 use atproto_identity::key::{KeyData, identify_key};
 use atproto_oauth::scopes::Scope;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::errors::ConfigError;
@@ -34,7 +35,11 @@ pub struct PrivateKeys(Vec<KeyData>);
 
 /// OAuth supported scopes configuration
 #[derive(Clone)]
-pub struct OAuthSupportedScopes(Vec<Scope>);
+pub struct OAuthSupportedScopes {
+    known_scopes: Vec<Scope>,
+    serialized_scopes: Vec<String>,
+    normalized_scopes: HashSet<String>,
+}
 
 /// Client default access token expiration configuration
 #[derive(Clone)]
@@ -388,23 +393,20 @@ impl TryFrom<Option<String>> for OAuthSupportedScopes {
         if value.is_empty() {
             // Parse default scopes
             let default_scopes = "atproto transition:generic transition:email";
-            let scopes = Scope::parse_multiple_reduced(default_scopes).map_err(|e| {
-                ConfigError::InvalidScope(format!("Failed to parse default scopes: {}", e))
-            })?;
-            return Ok(Self(scopes));
+            return Self::try_from(Some(default_scopes.to_string()));
         }
 
-        // Apply compat_scopes to normalize scope format before parsing
-        let normalized_value = crate::oauth::scope_validation::compat_scopes(&value);
-
-        // Parse the provided scopes
-        let scopes = Scope::parse_multiple(&normalized_value)
-            .map_err(|e| ConfigError::InvalidScope(format!("Failed to parse scopes: {}", e)))?;
+        let parsed_scopes = crate::oauth::scope_validation::parse_scope_set(&value)
+            .map_err(|e| ConfigError::InvalidScope(e.to_string()))?;
 
         // Validate scope requirements
-        Self::validate_scope_requirements(&scopes)?;
+        Self::validate_scope_requirements(parsed_scopes.known_scopes())?;
 
-        Ok(Self(scopes))
+        Ok(Self {
+            known_scopes: parsed_scopes.known_scopes().to_vec(),
+            serialized_scopes: parsed_scopes.as_strings(),
+            normalized_scopes: parsed_scopes.normalized_scopes().clone(),
+        })
     }
 }
 
@@ -418,7 +420,7 @@ impl TryFrom<String> for OAuthSupportedScopes {
 
 impl AsRef<Vec<Scope>> for OAuthSupportedScopes {
     fn as_ref(&self) -> &Vec<Scope> {
-        &self.0
+        &self.known_scopes
     }
 }
 
@@ -432,7 +434,11 @@ impl OAuthSupportedScopes {
 
     /// Get scopes as a Vec of strings for serialization
     pub fn as_strings(&self) -> Vec<String> {
-        self.0.iter().map(|s| s.to_string_normalized()).collect()
+        self.serialized_scopes.clone()
+    }
+
+    pub fn normalized_strings(&self) -> &HashSet<String> {
+        &self.normalized_scopes
     }
 }
 
@@ -621,6 +627,67 @@ mod tests {
             let error_msg = e.to_string();
             assert!(error_msg.contains("email") && error_msg.contains("requires"));
         }
+    }
+
+    #[test]
+    fn test_oauth_supported_scopes_accept_permission_sets() {
+        let scopes = OAuthSupportedScopes::try_from(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            scopes.as_strings(),
+            vec![
+                "atproto".to_string(),
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ]
+        );
+        assert!(scopes.normalized_strings().contains("atproto"));
+        assert!(
+            scopes
+                .normalized_strings()
+                .contains("include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview")
+        );
+    }
+
+    #[test]
+    fn test_oauth_supported_scopes_serialize_compat_aliases_as_normalized_names() {
+        let scopes = OAuthSupportedScopes::try_from(
+            "atproto atproto:transition:generic include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            scopes.as_strings(),
+            vec![
+                "atproto".to_string(),
+                "transition:generic".to_string(),
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_oauth_supported_scopes_accept_query_form_permission_sets() {
+        let scopes = OAuthSupportedScopes::try_from(
+            "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            scopes.as_strings(),
+            vec![
+                "atproto".to_string(),
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ]
+        );
+        assert!(
+            scopes
+                .normalized_strings()
+                .contains("include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview")
+        );
     }
 }
 

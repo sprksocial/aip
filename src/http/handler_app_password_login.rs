@@ -64,7 +64,10 @@ pub async fn handle_app_password_login(
     };
 
     // Store document for later use
-    let _ = state.document_storage.store_document(document.clone()).await;
+    let _ = state
+        .document_storage
+        .store_document(document.clone())
+        .await;
 
     let did = document.id.clone();
     let pds_endpoints: Vec<String> = document
@@ -155,7 +158,8 @@ pub async fn handle_app_password_login(
     let auth_server = AuthorizationServer::new(
         state.oauth_storage.clone(),
         state.config.external_base.clone(),
-    );
+    )
+    .with_supported_scopes(state.config.oauth_supported_scopes.normalized_strings());
 
     // session_id is None because AppPasswordSession is looked up by (client_id, did)
     match auth_server.authorize(auth_request, did.clone(), None).await {
@@ -232,7 +236,10 @@ fn render_error(error: &str, form: &AppPasswordLoginForm, state: &AppState) -> R
         "alt_auth_label": alt_auth_label,
     });
 
-    match state.template_env.render("login_app_password.html", &template_data) {
+    match state
+        .template_env
+        .render("login_app_password.html", &template_data)
+    {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!("Template rendering failed: {}", e);
@@ -268,7 +275,10 @@ mod tests {
         assert_eq!(form.login_hint, "user.bsky.social");
         assert_eq!(form.app_password, "xxxx-xxxx-xxxx-xxxx");
         assert_eq!(form.client_id, "https://example.com/client");
-        assert_eq!(form.redirect_uri, Some("https://example.com/callback".to_string()));
+        assert_eq!(
+            form.redirect_uri,
+            Some("https://example.com/callback".to_string())
+        );
         assert_eq!(form.response_type, Some("code".to_string()));
         assert_eq!(form.scope, Some("atproto".to_string()));
         assert_eq!(form.state, Some("test-state".to_string()));

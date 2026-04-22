@@ -9,7 +9,6 @@ use crate::oauth::openid::OpenIDClaims;
 use crate::oauth::utils_atprotocol_oauth::{
     build_openid_claims_with_document_info, get_atprotocol_session_with_refresh,
 };
-use atproto_oauth::scopes::Scope;
 
 /// Get OpenID Connect UserInfo
 /// GET /oauth/userinfo
@@ -50,15 +49,11 @@ pub async fn get_userinfo_handler(
     // Parse the access token scopes into Scope objects
     let scopes = match access_token.scope {
         Some(ref scope_str) => {
-            // Apply compat_scopes to normalize scope format before parsing
-            let normalized_scope = crate::oauth::scope_validation::compat_scopes(scope_str);
-
-            // Parse all scopes at once using Scope::parse_multiple
-            match Scope::parse_multiple(&normalized_scope) {
-                Ok(parsed_scopes) => parsed_scopes.into_iter().collect(),
+            match crate::oauth::scope_validation::parse_scope_set(scope_str) {
+                Ok(parsed_scopes) => parsed_scopes.known_scopes().iter().cloned().collect(),
                 Err(e) => {
                     // If parsing fails, log and use empty set
-                    tracing::debug!("Failed to parse scopes '{}': {}", normalized_scope, e);
+                    tracing::debug!("Failed to parse scopes '{}': {}", scope_str, e);
                     std::collections::HashSet::new()
                 }
             }

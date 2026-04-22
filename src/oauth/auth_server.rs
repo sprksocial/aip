@@ -16,7 +16,7 @@ use chrono::{Duration, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use url::Url;
 
 /// OAuth 2.1 Authorization Server
@@ -29,6 +29,8 @@ pub struct AuthorizationServer {
     issuer: String,
     /// Whether PKCE is required for public clients
     require_pkce: bool,
+    /// Server-advertised scopes enforced across authorization paths.
+    supported_scopes: Option<HashSet<String>>,
 }
 
 impl AuthorizationServer {
@@ -43,7 +45,30 @@ impl AuthorizationServer {
             auth_code_lifetime: Duration::minutes(10),
             issuer,
             require_pkce: true,
+            supported_scopes: None,
         }
+    }
+
+    pub fn with_supported_scopes(mut self, supported_scopes: &HashSet<String>) -> Self {
+        self.supported_scopes = Some(supported_scopes.clone());
+        self
+    }
+
+    fn validate_supported_scopes(
+        &self,
+        parsed_requested: &crate::oauth::scope_validation::ParsedScopeSet,
+    ) -> Result<(), OAuthError> {
+        if let Some(ref supported_scopes) = self.supported_scopes
+            && !parsed_requested
+                .normalized_scopes()
+                .is_subset(supported_scopes)
+        {
+            return Err(OAuthError::InvalidScope(
+                "One or more requested scopes are not supported by this server".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Handle authorization requests (RFC 6749 Section 4.1.1)
@@ -92,35 +117,31 @@ impl AuthorizationServer {
         }
 
         // Validate scope using normalized comparison
-        if let Some(ref requested_scope) = request.scope
-            && let Some(ref client_scope) = client.scope
-        {
+        if let Some(ref requested_scope) = request.scope {
             let parsed_requested =
-                atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
+                crate::oauth::scope_validation::parse_scope_set(requested_scope)?;
+
+            self.validate_supported_scopes(&parsed_requested)?;
+
+            if let Some(ref client_scope) = client.scope {
+                let parsed_allowed = crate::oauth::scope_validation::parse_scope_set(client_scope)
                     .map_err(|e| {
-                        OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
+                        OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
                     })?;
 
-            let parsed_allowed =
-                atproto_oauth::scopes::Scope::parse_multiple_reduced(client_scope).map_err(
-                    |e| OAuthError::InvalidScope(format!("Invalid client scope format: {}", e)),
-                )?;
-
-            let requested_normalized: std::collections::HashSet<String> = parsed_requested
-                .iter()
-                .map(|s| s.to_string_normalized())
-                .collect();
-
-            let allowed_normalized: std::collections::HashSet<String> = parsed_allowed
-                .iter()
-                .map(|s| s.to_string_normalized())
-                .collect();
-
-            if !requested_normalized.is_subset(&allowed_normalized) {
-                return Err(OAuthError::InvalidScope(
-                    "Requested scope exceeds allowed scope".to_string(),
-                ));
+                if !parsed_requested
+                    .normalized_scopes()
+                    .is_subset(parsed_allowed.normalized_scopes())
+                {
+                    return Err(OAuthError::InvalidScope(
+                        "Requested scope exceeds allowed scope".to_string(),
+                    ));
+                }
             }
+
+            crate::oauth::scope_validation::validate_oauth_scope_requirements(
+                parsed_requested.known_scopes(),
+            )?;
         }
 
         // For public clients, require PKCE
@@ -391,35 +412,29 @@ impl AuthorizationServer {
 
         // Validate scope using normalized comparison
         let granted_scope = if let Some(ref requested_scope) = request.scope {
+            let parsed_requested =
+                crate::oauth::scope_validation::parse_scope_set(requested_scope)?;
+
+            self.validate_supported_scopes(&parsed_requested)?;
+
             if let Some(ref client_scope) = client.scope {
-                let parsed_requested =
-                    atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
-                        .map_err(|e| {
-                            OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
-                        })?;
+                let parsed_allowed = crate::oauth::scope_validation::parse_scope_set(client_scope)
+                    .map_err(|e| {
+                        OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
+                    })?;
 
-                let parsed_allowed =
-                    atproto_oauth::scopes::Scope::parse_multiple_reduced(client_scope).map_err(
-                        |e| {
-                            OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
-                        },
-                    )?;
-
-                let requested_normalized: std::collections::HashSet<String> = parsed_requested
-                    .iter()
-                    .map(|s| s.to_string_normalized())
-                    .collect();
-
-                let allowed_normalized: std::collections::HashSet<String> = parsed_allowed
-                    .iter()
-                    .map(|s| s.to_string_normalized())
-                    .collect();
-
-                if !requested_normalized.is_subset(&allowed_normalized) {
+                if !parsed_requested
+                    .normalized_scopes()
+                    .is_subset(parsed_allowed.normalized_scopes())
+                {
                     return Err(OAuthError::InvalidScope(
                         "Requested scope exceeds allowed scope".to_string(),
                     ));
                 }
+
+                crate::oauth::scope_validation::validate_oauth_scope_requirements(
+                    parsed_requested.known_scopes(),
+                )?;
 
                 Some(requested_scope.clone())
             } else {
@@ -543,11 +558,13 @@ impl AuthorizationServer {
 
         // Atomically refresh tokens
         self.storage
-            .refresh_tokens(refresh_token, &access_token_record, &new_refresh_token_record)
+            .refresh_tokens(
+                refresh_token,
+                &access_token_record,
+                &new_refresh_token_record,
+            )
             .await
-            .map_err(|e| {
-                OAuthError::ServerError(format!("Failed to refresh tokens: {:?}", e))
-            })?
+            .map_err(|e| OAuthError::ServerError(format!("Failed to refresh tokens: {:?}", e)))?
             .ok_or_else(|| {
                 OAuthError::InvalidGrant("Refresh token already used or expired".to_string())
             })?;
@@ -1194,6 +1211,13 @@ mod tests {
     use crate::storage::inmemory::MemoryOAuthStorage;
     use crate::storage::traits::{AccessTokenStore, DeviceCodeStore, OAuthClientStore};
 
+    fn normalized_scopes(scope: &str) -> HashSet<String> {
+        crate::oauth::scope_validation::parse_scope_set(scope)
+            .unwrap()
+            .normalized_scopes()
+            .clone()
+    }
+
     #[tokio::test]
     async fn test_authorization_code_flow() {
         let storage = Arc::new(MemoryOAuthStorage::new());
@@ -1288,6 +1312,262 @@ mod tests {
         assert!(!token_response.access_token.is_empty());
         assert!(token_response.refresh_token.is_some());
         assert_eq!(token_response.scope, Some("atproto".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_flow_with_permission_set_scope() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let supported_scopes = normalized_scopes(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+        );
+        let auth_server =
+            AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
+                .with_supported_scopes(&supported_scopes);
+
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        storage.store_client(&client).await.unwrap();
+
+        let auth_request = AuthorizationRequest {
+            response_type: vec![ResponseType::Code],
+            client_id: "test-client".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            login_hint: None,
+            nonce: None,
+        };
+
+        let auth_response = auth_server
+            .authorize(auth_request, "test-user".to_string(), None)
+            .await
+            .unwrap();
+
+        let redirect_url = match auth_response {
+            AuthorizeResponse::Redirect(url) => url,
+            _ => panic!("Expected redirect response"),
+        };
+
+        let parsed_url = Url::parse(&redirect_url).unwrap();
+        assert!(parsed_url.query_pairs().any(|(key, _)| key == "code"));
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_flow_with_permission_set_query_form_scope() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let supported_scopes = normalized_scopes(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+        );
+        let auth_server =
+            AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
+                .with_supported_scopes(&supported_scopes);
+
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        storage.store_client(&client).await.unwrap();
+
+        let auth_request = AuthorizationRequest {
+            response_type: vec![ResponseType::Code],
+            client_id: "test-client".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            login_hint: None,
+            nonce: None,
+        };
+
+        let auth_response = auth_server
+            .authorize(auth_request, "test-user".to_string(), None)
+            .await
+            .unwrap();
+
+        let redirect_url = match auth_response {
+            AuthorizeResponse::Redirect(url) => url,
+            _ => panic!("Expected redirect response"),
+        };
+
+        let parsed_url = Url::parse(&redirect_url).unwrap();
+        assert!(parsed_url.query_pairs().any(|(key, _)| key == "code"));
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_flow_rejects_permission_set_without_atproto_scope() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let supported_scopes = normalized_scopes(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+        );
+        let auth_server =
+            AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
+                .with_supported_scopes(&supported_scopes);
+
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        storage.store_client(&client).await.unwrap();
+
+        let auth_request = AuthorizationRequest {
+            response_type: vec![ResponseType::Code],
+            client_id: "test-client".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            login_hint: None,
+            nonce: None,
+        };
+
+        let result = auth_server
+            .authorize(auth_request, "test-user".to_string(), None)
+            .await;
+
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(error, OAuthError::InvalidScope(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_flow_rejects_unsupported_permission_set_scope_for_unscoped_client()
+     {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let supported_scopes = normalized_scopes("atproto transition:generic");
+        let auth_server =
+            AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
+                .with_supported_scopes(&supported_scopes);
+
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode],
+            response_types: vec![ResponseType::Code],
+            scope: None,
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        storage.store_client(&client).await.unwrap();
+
+        let auth_request = AuthorizationRequest {
+            response_type: vec![ResponseType::Code],
+            client_id: "test-client".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            login_hint: None,
+            nonce: None,
+        };
+
+        let result = auth_server
+            .authorize(auth_request, "test-user".to_string(), None)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(OAuthError::InvalidScope(message))
+                if message == "One or more requested scopes are not supported by this server"
+        ));
     }
 
     #[tokio::test]

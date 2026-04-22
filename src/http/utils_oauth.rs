@@ -195,10 +195,13 @@ pub fn normalize_login_hint(login_hint: &str) -> Result<String, OAuthError> {
 pub async fn create_base_auth_server(
     state: &AppState,
 ) -> std::result::Result<Arc<AuthorizationServer>, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(Arc::new(AuthorizationServer::new(
-        state.oauth_storage.clone(),
-        state.config.external_base.clone(),
-    )))
+    Ok(Arc::new(
+        AuthorizationServer::new(
+            state.oauth_storage.clone(),
+            state.config.external_base.clone(),
+        )
+        .with_supported_scopes(state.config.oauth_supported_scopes.normalized_strings()),
+    ))
 }
 
 #[cfg(test)]
@@ -534,7 +537,8 @@ mod tests {
     fn test_normalize_login_hint_at_uri_with_path() {
         // AT-URI with path should extract just the authority (DID)
         assert_eq!(
-            normalize_login_hint("at://did:plc:7iza6de2dwap2sbkpav7c6c6/app.bsky.feed.post/abc123").unwrap(),
+            normalize_login_hint("at://did:plc:7iza6de2dwap2sbkpav7c6c6/app.bsky.feed.post/abc123")
+                .unwrap(),
             "did:plc:7iza6de2dwap2sbkpav7c6c6"
         );
 

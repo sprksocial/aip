@@ -30,8 +30,19 @@ pub async fn handle_atpoauth_client_metadata(
             }
         };
 
-    // Serialize the filtered scopes
-    let scopes = Scope::serialize_multiple(&filtered_scopes);
+    let mut scope_tokens: Vec<String> = filtered_scopes
+        .iter()
+        .map(|scope| scope.to_string_normalized())
+        .collect();
+    scope_tokens.extend(
+        app_state
+            .config
+            .oauth_supported_scopes
+            .as_strings()
+            .into_iter()
+            .filter(|scope| scope.starts_with("include:")),
+    );
+    let scopes = scope_tokens.join(" ");
 
     let oauth_client_config = OAuthClientConfig {
         client_id: format!(

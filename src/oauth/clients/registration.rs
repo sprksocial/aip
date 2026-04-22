@@ -435,8 +435,6 @@ impl ClientRegistrationService {
 
         // Validate scope
         if let Some(ref scope) = request.scope {
-            tracing::warn!(?scope, "request.scope");
-            tracing::warn!(?scope, "request.scope");
             if !validate_scope(scope) {
                 return Err(ClientRegistrationError::InvalidClientMetadata(format!(
                     "Invalid scope: {}",
@@ -444,34 +442,21 @@ impl ClientRegistrationService {
                 )));
             }
 
-            // Parse the scope string into Scope instances for validation
-            let parsed_scopes = atproto_oauth::scopes::Scope::parse_multiple_reduced(scope)
-                .map_err(|e| {
-                    ClientRegistrationError::InvalidClientMetadata(format!(
-                        "Invalid scope format: {}",
-                        e
-                    ))
-                })?;
+            let parsed_scopes = crate::oauth::scope_validation::parse_scope_set(scope)
+                .map_err(|e| ClientRegistrationError::InvalidClientMetadata(e.to_string()))?;
 
             // Validate scope requirements (openid and email scopes must have required AT Protocol scopes)
-            crate::config::OAuthSupportedScopes::validate_scope_requirements(&parsed_scopes)
-                .map_err(|e| ClientRegistrationError::InvalidClientMetadata(e.to_string()))?;
+            crate::config::OAuthSupportedScopes::validate_scope_requirements(
+                parsed_scopes.known_scopes(),
+            )
+            .map_err(|e| ClientRegistrationError::InvalidClientMetadata(e.to_string()))?;
 
             // Validate against server's supported scopes if provided
             if let Some(supported_scopes) = supported_scopes {
-                // Compare using normalized strings to handle different input formats
-                // (e.g., URL-encoded vs non-encoded query parameters)
-                let requested_normalized: std::collections::HashSet<String> = parsed_scopes
-                    .iter()
-                    .map(|s| s.to_string_normalized())
-                    .collect();
-                let supported_normalized: std::collections::HashSet<String> = supported_scopes
-                    .as_ref()
-                    .iter()
-                    .map(|s| s.to_string_normalized())
-                    .collect();
-
-                if !requested_normalized.is_subset(&supported_normalized) {
+                if !parsed_scopes
+                    .normalized_scopes()
+                    .is_subset(supported_scopes.normalized_strings())
+                {
                     let supported_scope_strings = supported_scopes.as_strings();
                     return Err(ClientRegistrationError::InvalidClientMetadata(format!(
                         "Requested scope '{}' contains unsupported scopes. Supported scopes: {}",
@@ -718,6 +703,84 @@ mod tests {
                 ClientRegistrationError::InvalidClientMetadata(_)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn test_scope_validation_with_permission_sets() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let service = ClientRegistrationService::new(
+            storage,
+            chrono::Duration::days(1),
+            chrono::Duration::days(14),
+            true,
+        );
+
+        let supported_scopes = crate::config::OAuthSupportedScopes::try_from(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+        )
+        .unwrap();
+
+        let valid_request = ClientRegistrationRequest {
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: Some(vec!["https://example.com/callback".to_string()]),
+            grant_types: None,
+            response_types: None,
+            scope: Some(
+                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            metadata: serde_json::Value::Null,
+        };
+
+        let result = service
+            .register_client_with_supported_scopes(valid_request, Some(&supported_scopes))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_scope_validation_with_permission_set_query_form() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let service = ClientRegistrationService::new(
+            storage,
+            chrono::Duration::days(1),
+            chrono::Duration::days(14),
+            true,
+        );
+
+        let supported_scopes = crate::config::OAuthSupportedScopes::try_from(
+            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+        )
+        .unwrap();
+
+        let valid_request = ClientRegistrationRequest {
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: Some(vec!["https://example.com/callback".to_string()]),
+            grant_types: None,
+            response_types: None,
+            scope: Some(
+                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                    .to_string(),
+            ),
+            token_endpoint_auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            metadata: serde_json::Value::Null,
+        };
+
+        let result = service
+            .register_client_with_supported_scopes(valid_request, Some(&supported_scopes))
+            .await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

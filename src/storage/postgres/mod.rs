@@ -147,10 +147,7 @@ impl AuthorizationCodeStore for PostgresOAuthStorage {
         self.authorization_code_store.store_code(code).await
     }
 
-    async fn get_code(
-        &self,
-        code: &str,
-    ) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
+    async fn get_code(&self, code: &str) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
         self.authorization_code_store.get_code(code).await
     }
 
@@ -643,9 +640,7 @@ impl TransactionalStorage for PostgresOAuthStorage {
         .bind(&session.exchange_error)
         .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            StorageError::TransactionFailed(format!("Failed to store session: {}", e))
-        })?;
+        .map_err(|e| StorageError::TransactionFailed(format!("Failed to store session: {}", e)))?;
 
         // Commit the transaction
         tx.commit()
@@ -676,33 +671,49 @@ impl TransactionalStorage for PostgresOAuthStorage {
             .bind(code)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| {
-                StorageError::TransactionFailed(format!("Failed to get code: {}", e))
-            })?;
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to get code: {}", e)))?;
 
         let auth_code = match row {
             Some(row) => {
                 // Parse the authorization code
-                let created_at: chrono::DateTime<Utc> = row
-                    .try_get("created_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
-                let expires_at: chrono::DateTime<Utc> = row
-                    .try_get("expires_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get expires_at: {}", e)))?;
-                let used: bool = row
-                    .try_get("used")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get used: {}", e)))?;
+                let created_at: chrono::DateTime<Utc> = row.try_get("created_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get created_at: {}", e))
+                })?;
+                let expires_at: chrono::DateTime<Utc> = row.try_get("expires_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get expires_at: {}", e))
+                })?;
+                let used: bool = row.try_get("used").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get used: {}", e))
+                })?;
 
                 let auth_code = crate::oauth::types::AuthorizationCode {
-                    code: row.try_get("code").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    redirect_uri: row.try_get("redirect_uri").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    code_challenge: row.try_get("code_challenge").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    code_challenge_method: row.try_get("code_challenge_method").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code: row
+                        .try_get("code")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row
+                        .try_get("client_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row
+                        .try_get("user_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row
+                        .try_get("session_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    redirect_uri: row
+                        .try_get("redirect_uri")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row
+                        .try_get("scope")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge: row
+                        .try_get("code_challenge")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge_method: row
+                        .try_get("code_challenge_method")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row
+                        .try_get("nonce")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
                     created_at,
                     expires_at,
                     used,
@@ -715,7 +726,9 @@ impl TransactionalStorage for PostgresOAuthStorage {
                         .execute(&mut *tx)
                         .await
                         .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
-                    tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
                     return Ok(None);
                 }
 
@@ -841,21 +854,36 @@ impl TransactionalStorage for PostgresOAuthStorage {
         let consumed_token = match row {
             Some(row) => {
                 // Parse the refresh token
-                let created_at: chrono::DateTime<Utc> = row
-                    .try_get("created_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
-                let expires_at: Option<chrono::DateTime<Utc>> = row
-                    .try_get("expires_at")
-                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get expires_at: {}", e)))?;
+                let created_at: chrono::DateTime<Utc> = row.try_get("created_at").map_err(|e| {
+                    StorageError::DatabaseError(format!("Failed to get created_at: {}", e))
+                })?;
+                let expires_at: Option<chrono::DateTime<Utc>> =
+                    row.try_get("expires_at").map_err(|e| {
+                        StorageError::DatabaseError(format!("Failed to get expires_at: {}", e))
+                    })?;
 
                 let refresh_token = crate::oauth::types::RefreshToken {
-                    token: row.try_get("token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    access_token: row.try_get("access_token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
-                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    token: row
+                        .try_get("token")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    access_token: row
+                        .try_get("access_token")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row
+                        .try_get("client_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row
+                        .try_get("user_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row
+                        .try_get("session_id")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row
+                        .try_get("scope")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row
+                        .try_get("nonce")
+                        .map_err(|e| StorageError::DatabaseError(e.to_string()))?,
                     created_at,
                     expires_at,
                 };
@@ -868,7 +896,9 @@ impl TransactionalStorage for PostgresOAuthStorage {
                             .execute(&mut *tx)
                             .await
                             .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
-                        tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                        tx.commit()
+                            .await
+                            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
                         return Ok(None);
                     }
                 }

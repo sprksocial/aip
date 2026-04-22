@@ -10,7 +10,7 @@ use crate::oauth::{
     atprotocol_bridge::{AtpOAuthSessionStorage, AuthorizationRequestStorage},
     clients::registration::ClientRegistrationService,
 };
-use crate::storage::{traits::TransactionalStorage, KeyProvider};
+use crate::storage::{KeyProvider, traits::TransactionalStorage};
 use crate::{config::Config, oauth::DPoPNonceProvider};
 
 #[cfg(feature = "reload")]

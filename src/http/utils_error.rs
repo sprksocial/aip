@@ -118,11 +118,8 @@ pub trait StorageResultOptionExt<T> {
     ///     .await
     ///     .require_or_error("Client", "Failed to retrieve client")?;
     /// ```
-    fn require_or_error(
-        self,
-        resource_name: &str,
-        operation: &str,
-    ) -> Result<T, HttpErrorResponse>;
+    fn require_or_error(self, resource_name: &str, operation: &str)
+    -> Result<T, HttpErrorResponse>;
 }
 
 impl<T> StorageResultOptionExt<T> for Result<Option<T>, StorageError> {
@@ -193,10 +190,12 @@ mod tests {
         let (status, json) = result.unwrap_err();
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(json.0["error"], "server_error");
-        assert!(json.0["error_description"]
-            .as_str()
-            .unwrap()
-            .contains("Test operation"));
+        assert!(
+            json.0["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("Test operation")
+        );
     }
 
     #[test]
@@ -208,10 +207,12 @@ mod tests {
         let (status, json) = result.unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(json.0["error"], "not_found");
-        assert!(json.0["error_description"]
-            .as_str()
-            .unwrap()
-            .contains("User not found"));
+        assert!(
+            json.0["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("User not found")
+        );
     }
 
     #[test]

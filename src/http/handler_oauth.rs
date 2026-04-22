@@ -45,8 +45,8 @@ async fn generate_id_token(
     .with_nonce(access_token.nonce);
 
     // Serialize claims
-    let vague_claims = serde_json::to_value(claims)
-        .map_err(|e| format!("Failed to serialize claims: {}", e))?;
+    let vague_claims =
+        serde_json::to_value(claims).map_err(|e| format!("Failed to serialize claims: {}", e))?;
     let real_claims: atproto_oauth::jwt::Claims = serde_json::from_value(vague_claims)
         .map_err(|e| format!("Failed to deserialize claims: {}", e))?;
 
