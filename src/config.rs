@@ -399,9 +399,6 @@ impl TryFrom<Option<String>> for OAuthSupportedScopes {
         let parsed_scopes = crate::oauth::scope_validation::parse_scope_set(&value)
             .map_err(|e| ConfigError::InvalidScope(e.to_string()))?;
 
-        // Validate scope requirements
-        Self::validate_scope_requirements(parsed_scopes.known_scopes())?;
-
         Ok(Self {
             known_scopes: parsed_scopes.known_scopes().to_vec(),
             serialized_scopes: parsed_scopes.as_strings(),
@@ -425,13 +422,6 @@ impl AsRef<Vec<Scope>> for OAuthSupportedScopes {
 }
 
 impl OAuthSupportedScopes {
-    /// Validate that scopes contain required AT Protocol scopes when certain OAuth scopes are present
-    /// This delegates to the centralized validation in scope_validation module
-    pub fn validate_scope_requirements(scopes: &[Scope]) -> Result<(), ConfigError> {
-        crate::oauth::scope_validation::validate_oauth_scope_requirements(scopes)
-            .map_err(|e| ConfigError::InvalidScope(e.to_string()))
-    }
-
     /// Get scopes as a Vec of strings for serialization
     pub fn as_strings(&self) -> Vec<String> {
         self.serialized_scopes.clone()
@@ -537,125 +527,41 @@ impl TryFrom<String> for AtprotoClientName {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_oauth_supported_scopes_validation() {
-        // Test 0: Invalid scopes - missing required atproto scope
-        let missing_atproto =
-            OAuthSupportedScopes::try_from("openid transition:generic".to_string());
-        assert!(
-            missing_atproto.is_err(),
-            "Configuration without atproto scope should fail"
-        );
-        if let Err(e) = missing_atproto {
-            let error_msg = e.to_string();
-            assert!(error_msg.contains("atproto") && error_msg.contains("required"));
-        }
-
-        // Test 1: Valid scopes with openid (no transition:generic required)
-        let valid_openid = OAuthSupportedScopes::try_from("atproto openid".to_string());
-        if let Err(ref e) = valid_openid {
-            eprintln!("Test 1 failed with error: {}", e);
-        }
-        assert!(valid_openid.is_ok(), "openid with atproto should be valid");
-
-        // Test 2: Valid scopes with email (requires openid and email capability)
-        let valid_email =
-            OAuthSupportedScopes::try_from("atproto openid email transition:email".to_string());
-        assert!(
-            valid_email.is_ok(),
-            "email with openid and transition:email should be valid"
-        );
-
-        // Test 3: Valid scopes - profile with openid
-        let valid_profile = OAuthSupportedScopes::try_from("atproto openid profile".to_string());
-        assert!(valid_profile.is_ok(), "profile with openid should be valid");
-
-        // Test 4: Invalid scopes - email and profile without openid
-        let invalid_email = OAuthSupportedScopes::try_from("atproto email profile".to_string());
-        assert!(
-            invalid_email.is_err(),
-            "email and profile without openid should fail"
-        );
-        if let Err(e) = invalid_email {
-            let error_msg = e.to_string();
-            // Should fail on profile or email requiring openid
-            assert!(
-                error_msg.contains("openid"),
-                "Expected error about openid requirement, got: {}",
-                error_msg
-            );
-        }
-
-        // Test 5: Invalid scopes - email without openid
-        let invalid_email_no_openid =
-            OAuthSupportedScopes::try_from("atproto email transition:email".to_string());
-        assert!(
-            invalid_email_no_openid.is_err(),
-            "email without openid should be invalid"
-        );
-        if let Err(e) = invalid_email_no_openid {
-            let error_msg = e.to_string();
-            assert!(error_msg.contains("email") && error_msg.contains("openid"));
-        }
-
-        // Test 6: Valid email with account:email?action=read
-        let valid_email_alt = OAuthSupportedScopes::try_from(
-            "atproto openid email account:email?action=read".to_string(),
-        );
-        assert!(
-            valid_email_alt.is_ok(),
-            "email with openid and account:email?action=read should be valid"
-        );
-
-        // Test 6: Valid scopes with both openid and email with all requirements
-        let valid_both = OAuthSupportedScopes::try_from(
-            "atproto openid email transition:generic transition:email".to_string(),
-        );
-        assert!(
-            valid_both.is_ok(),
-            "openid and email with all requirements should be valid"
-        );
-
-        // Test 7: Invalid scopes - email with transition:generic (doesn't grant email)
-        let invalid_email_with_generic =
-            OAuthSupportedScopes::try_from("atproto openid email transition:generic".to_string());
-        assert!(
-            invalid_email_with_generic.is_err(),
-            "email with only transition:generic should be invalid (doesn't grant email access)"
-        );
-        if let Err(e) = invalid_email_with_generic {
-            let error_msg = e.to_string();
-            assert!(error_msg.contains("email") && error_msg.contains("requires"));
-        }
-    }
+    const EXAMPLE_PERMISSION_SET: &str =
+        "include:tools.example.read?aud=did:web:api.example.com#appview";
+    const EXAMPLE_PERMISSION_AUDIENCE: &str = "did:web:api.example.com#appview";
 
     #[test]
-    fn test_oauth_supported_scopes_accept_permission_sets() {
-        let scopes = OAuthSupportedScopes::try_from(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
-        )
-        .unwrap();
+    fn test_oauth_supported_scopes_accept_generic_openid_scopes() {
+        let scopes = OAuthSupportedScopes::try_from("openid email profile".to_string()).unwrap();
 
         assert_eq!(
             scopes.as_strings(),
             vec![
-                "atproto".to_string(),
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+                "openid".to_string(),
+                "email".to_string(),
+                "profile".to_string()
             ]
-        );
-        assert!(scopes.normalized_strings().contains("atproto"));
-        assert!(
-            scopes
-                .normalized_strings()
-                .contains("include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview")
         );
     }
 
     #[test]
+    fn test_oauth_supported_scopes_accept_permission_sets() {
+        let scopes =
+            OAuthSupportedScopes::try_from(format!("openid {EXAMPLE_PERMISSION_SET}")).unwrap();
+
+        assert_eq!(
+            scopes.as_strings(),
+            vec!["openid".to_string(), EXAMPLE_PERMISSION_SET.to_string(),]
+        );
+        assert!(scopes.normalized_strings().contains(EXAMPLE_PERMISSION_SET));
+    }
+
+    #[test]
     fn test_oauth_supported_scopes_serialize_compat_aliases_as_normalized_names() {
-        let scopes = OAuthSupportedScopes::try_from(
-            "atproto atproto:transition:generic include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
-        )
+        let scopes = OAuthSupportedScopes::try_from(format!(
+            "atproto atproto:transition:generic {EXAMPLE_PERMISSION_SET}"
+        ))
         .unwrap();
 
         assert_eq!(
@@ -663,7 +569,7 @@ mod tests {
             vec![
                 "atproto".to_string(),
                 "transition:generic".to_string(),
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+                EXAMPLE_PERMISSION_SET.to_string(),
             ]
         );
     }
@@ -671,23 +577,16 @@ mod tests {
     #[test]
     fn test_oauth_supported_scopes_accept_query_form_permission_sets() {
         let scopes = OAuthSupportedScopes::try_from(
-            "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
-                .to_string(),
+            format!("openid include?nsid=tools.example.read&aud={EXAMPLE_PERMISSION_AUDIENCE}")
+                .replace('#', "%23"),
         )
         .unwrap();
 
         assert_eq!(
             scopes.as_strings(),
-            vec![
-                "atproto".to_string(),
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
-            ]
+            vec!["openid".to_string(), EXAMPLE_PERMISSION_SET.to_string(),]
         );
-        assert!(
-            scopes
-                .normalized_strings()
-                .contains("include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview")
-        );
+        assert!(scopes.normalized_strings().contains(EXAMPLE_PERMISSION_SET));
     }
 }
 

@@ -22,6 +22,27 @@ use uuid::Uuid;
 // Re-export unified storage types
 pub use crate::storage::traits::AtpOAuthSession;
 
+fn default_atprotocol_scope() -> String {
+    Scope::serialize_multiple(&[Scope::Atproto])
+}
+
+fn scope_for_atprotocol_oauth(original_scope: Option<&str>) -> Result<String, OAuthError> {
+    let Some(original_scope) = original_scope else {
+        return Ok(default_atprotocol_scope());
+    };
+
+    let parsed_scopes = crate::oauth::scope_validation::parse_scope_set(original_scope)?;
+    match crate::oauth::scope_validation::serialize_atprotocol_scope_set(&parsed_scopes) {
+        Ok(scope) => Ok(scope),
+        Err(OAuthError::InvalidScope(message))
+            if message == "No valid AT Protocol scopes remain after filtering" =>
+        {
+            Ok(default_atprotocol_scope())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Storage trait for ATProtocol OAuth sessions (legacy interface)
 #[async_trait::async_trait]
 pub trait AtpOAuthSessionStorage: Send + Sync {
@@ -405,16 +426,7 @@ impl AtpBackedAuthorizationServer {
 
         // Create OAuth request state for ATProtocol workflow
         // Parse, validate, and filter scopes for AT Protocol OAuth
-        let filtered_scope = if let Some(ref original_scope) = request.scope {
-            let parsed_scopes = crate::oauth::scope_validation::parse_scope_set(original_scope)?;
-            crate::oauth::scope_validation::serialize_atprotocol_scope_set(&parsed_scopes)?
-        } else {
-            // If no scope provided, default to just atproto scope
-            let scopes = vec![Scope::Atproto];
-
-            // Serialize the scopes
-            Scope::serialize_multiple(&scopes)
-        };
+        let filtered_scope = scope_for_atprotocol_oauth(request.scope.as_deref())?;
 
         let atpoauth_request_state = OAuthRequestState {
             state: atpoauth_state.clone(),
@@ -1609,127 +1621,21 @@ mod tests {
 
     #[test]
     fn test_scope_filtering_with_profile_and_email() {
-        use crate::oauth::types::{AuthorizationRequest, ResponseType};
-
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let server = create_test_atp_backed_server();
-
-            // Test scope filtering with profile scope - missing required AT Protocol scopes
-            let request_with_profile = AuthorizationRequest {
-                response_type: vec![ResponseType::Code],
-                client_id: "test-client".to_string(),
-                redirect_uri: "https://example.com/callback".to_string(),
-                scope: Some("openid profile".to_string()),
-                state: Some("client-state".to_string()),
-                code_challenge: None,
-                code_challenge_method: None,
-                login_hint: Some("alice.bsky.social".to_string()),
-                nonce: None,
-            };
-
-            // Store a test client to pass validation
-            let test_client = crate::oauth::types::OAuthClient {
-                client_id: "test-client".to_string(),
-                client_secret: None,
-                client_name: Some("Test Client".to_string()),
-                redirect_uris: vec!["https://example.com/callback".to_string()],
-                grant_types: vec![crate::oauth::types::GrantType::AuthorizationCode],
-                response_types: vec![crate::oauth::types::ResponseType::Code],
-                scope: Some(
-                    "openid profile email atproto transition:generic transition:email".to_string(),
-                ),
-                token_endpoint_auth_method: crate::oauth::types::ClientAuthMethod::None,
-                client_type: crate::oauth::types::ClientType::Public,
-                application_type: None,
-                software_id: None,
-                software_version: None,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                metadata: serde_json::json!({}),
-                access_token_expiration: chrono::Duration::days(1),
-                refresh_token_expiration: chrono::Duration::days(14),
-                require_redirect_exact: true,
-                registration_access_token: Some("test-registration-token".to_string()),
-                jwks: None,
-            };
-
-            server
-                .base_auth_server
-                .storage
-                .store_client(&test_client)
-                .await
-                .unwrap();
-
-            // Test with profile scope - should fail due to missing required AT Protocol scopes
-            let result_profile = server
-                .authorize_with_atprotocol(request_with_profile, "alice.bsky.social".to_string())
-                .await;
-
-            // The test should fail with scope validation error
-            assert!(result_profile.is_err());
-            let error_message = result_profile.unwrap_err().to_string();
-            println!("Profile error message: {}", error_message);
-            assert!(
-                error_message.contains("atproto") && error_message.contains("required"),
-                "Expected scope validation error about missing atproto scope, got: {}",
-                error_message
-            );
-
-            // Test scope filtering with email scope - missing required AT Protocol scopes
-            let request_with_email = AuthorizationRequest {
-                response_type: vec![ResponseType::Code],
-                client_id: "test-client".to_string(),
-                redirect_uri: "https://example.com/callback".to_string(),
-                scope: Some("openid email".to_string()),
-                state: Some("client-state".to_string()),
-                code_challenge: None,
-                code_challenge_method: None,
-                login_hint: Some("alice.bsky.social".to_string()),
-                nonce: None,
-            };
-
-            // Test with email scope - should fail due to missing required AT Protocol scopes
-            let result_email = server
-                .authorize_with_atprotocol(request_with_email, "alice.bsky.social".to_string())
-                .await;
-
-            // The test should fail with scope validation error
-            assert!(result_email.is_err());
-            let error_message = result_email.unwrap_err().to_string();
-            println!("Email error message: {}", error_message);
-            assert!(
-                error_message.contains("atproto") && error_message.contains("required"),
-                "Expected scope validation error about missing atproto scope, got: {}",
-                error_message
-            );
-
-            // Test scope filtering with both profile and email scopes - missing required AT Protocol scopes
-            let request_with_both = AuthorizationRequest {
-                response_type: vec![ResponseType::Code],
-                client_id: "test-client".to_string(),
-                redirect_uri: "https://example.com/callback".to_string(),
-                scope: Some("openid profile email".to_string()),
-                state: Some("client-state".to_string()),
-                code_challenge: None,
-                code_challenge_method: None,
-                login_hint: Some("alice.bsky.social".to_string()),
-                nonce: None,
-            };
-
-            // Test with both scopes - should fail due to missing required AT Protocol scopes
-            let result_both = server
-                .authorize_with_atprotocol(request_with_both, "alice.bsky.social".to_string())
-                .await;
-
-            // The test should fail with scope validation error
-            assert!(result_both.is_err());
-            let error_message = result_both.unwrap_err().to_string();
-            println!("Both scopes error message: {}", error_message);
-            assert!(
-                error_message.contains("atproto") && error_message.contains("required"),
-                "Expected scope validation error about missing atproto scope, got: {}",
-                error_message
-            );
-        });
+        assert_eq!(
+            scope_for_atprotocol_oauth(Some("openid profile")).unwrap(),
+            "atproto"
+        );
+        assert_eq!(
+            scope_for_atprotocol_oauth(Some("openid email")).unwrap(),
+            "atproto"
+        );
+        assert_eq!(
+            scope_for_atprotocol_oauth(Some("openid profile email")).unwrap(),
+            "atproto"
+        );
+        assert_eq!(
+            scope_for_atprotocol_oauth(Some("openid profile atproto transition:generic")).unwrap(),
+            "atproto transition:generic"
+        );
     }
 }

@@ -215,6 +215,15 @@ impl AccessTokenStore for MemoryOAuthStorage {
         }
     }
 
+    async fn get_token_including_expired(&self, token: &str) -> Result<Option<AccessToken>> {
+        let tokens = self
+            .access_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+
+        Ok(tokens.get(token).cloned())
+    }
+
     async fn revoke_token(&self, token: &str) -> Result<()> {
         let mut tokens = self
             .access_tokens

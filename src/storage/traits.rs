@@ -62,6 +62,13 @@ pub trait AccessTokenStore {
     /// Retrieve an access token
     async fn get_token(&self, token: &str) -> Result<Option<AccessToken>>;
 
+    /// Retrieve an access token without applying expiration checks.
+    ///
+    /// This is only for refresh-token rotation, where the refresh token is the
+    /// credential being validated but the previous access-token metadata is
+    /// still needed to preserve session fields.
+    async fn get_token_including_expired(&self, token: &str) -> Result<Option<AccessToken>>;
+
     /// Revoke a token
     async fn revoke_token(&self, token: &str) -> Result<()>;
 

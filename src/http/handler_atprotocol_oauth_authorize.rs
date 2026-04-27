@@ -217,16 +217,6 @@ async fn process_authorization_query(
                 "error_description": "One or more requested scopes are not supported by this server"
             }));
         }
-
-        crate::oauth::scope_validation::validate_oauth_scope_requirements(
-            parsed_requested.known_scopes(),
-        )
-        .map_err(|e| {
-            serde_json::json!({
-                "error": "invalid_scope",
-                "error_description": e.to_string()
-            })
-        })?;
     }
 
     Ok((request, query))
@@ -583,14 +573,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_authorize_query_rejects_permission_set_without_required_atproto_scope() {
+    async fn test_authorize_query_accepts_permission_set_without_atproto_scope() {
         let storage = Arc::new(crate::storage::inmemory::MemoryOAuthStorage::new());
         let query = AuthorizeQuery {
             client_id: "test-client".to_string(),
             redirect_uri: Some("https://example.com/callback".to_string()),
             response_type: Some("code".to_string()),
             scope: Some(
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+                "include:tools.example.read?aud=did:web:api.example.com#appview".to_string(),
             ),
             state: None,
             code_challenge: None,
@@ -602,18 +592,19 @@ mod tests {
         };
 
         let config = create_test_config_with_scopes(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+            "atproto include:tools.example.read?aud=did:web:api.example.com#appview",
         );
-        let result = process_authorization_query(
+        let (request, _) = process_authorization_query(
             query,
             &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
-        .await;
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert_eq!(error["error"], "invalid_scope");
-        }
+        .await
+        .unwrap();
+        assert_eq!(
+            request.scope,
+            Some("include:tools.example.read?aud=did:web:api.example.com#appview".to_string())
+        );
     }
 
     #[tokio::test]
@@ -624,7 +615,7 @@ mod tests {
             redirect_uri: Some("https://example.com/callback".to_string()),
             response_type: Some("code".to_string()),
             scope: Some(
-                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                "atproto include?nsid=tools.example.read&aud=did:web:api.example.com%23appview"
                     .to_string(),
             ),
             state: None,
@@ -637,7 +628,7 @@ mod tests {
         };
 
         let config = create_test_config_with_scopes(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+            "atproto include:tools.example.read?aud=did:web:api.example.com#appview",
         );
         let (request, _) = process_authorization_query(
             query,
@@ -650,7 +641,7 @@ mod tests {
         assert_eq!(
             request.scope,
             Some(
-                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                "atproto include?nsid=tools.example.read&aud=did:web:api.example.com%23appview"
                     .to_string(),
             ),
         );

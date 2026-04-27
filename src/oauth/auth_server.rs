@@ -138,10 +138,6 @@ impl AuthorizationServer {
                     ));
                 }
             }
-
-            crate::oauth::scope_validation::validate_oauth_scope_requirements(
-                parsed_requested.known_scopes(),
-            )?;
         }
 
         // For public clients, require PKCE
@@ -432,10 +428,6 @@ impl AuthorizationServer {
                     ));
                 }
 
-                crate::oauth::scope_validation::validate_oauth_scope_requirements(
-                    parsed_requested.known_scopes(),
-                )?;
-
                 Some(requested_scope.clone())
             } else {
                 return Err(OAuthError::InvalidScope(
@@ -514,7 +506,7 @@ impl AuthorizationServer {
         // Get the old access token for session_iteration and token_type
         let old_access_token = self
             .storage
-            .get_token(&refresh_token_record.access_token)
+            .get_token_including_expired(&refresh_token_record.access_token)
             .await
             .map_err(|e| OAuthError::ServerError(e.to_string()))?
             .ok_or_else(|| OAuthError::InvalidGrant("Invalid refresh token".to_string()))?;
@@ -1315,10 +1307,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_token_grant_allows_expired_previous_access_token() {
+        let storage = Arc::new(MemoryOAuthStorage::new());
+        let auth_server =
+            AuthorizationServer::new(storage.clone(), "https://localhost".to_string());
+
+        let client = OAuthClient {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_name: Some("Test Client".to_string()),
+            redirect_uris: vec!["https://example.com/callback".to_string()],
+            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+            response_types: vec![ResponseType::Code],
+            scope: Some("atproto transition:generic".to_string()),
+            token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
+            client_type: ClientType::Confidential,
+            application_type: None,
+            software_id: None,
+            software_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+            access_token_expiration: chrono::Duration::days(1),
+            refresh_token_expiration: chrono::Duration::days(14),
+            require_redirect_exact: true,
+            registration_access_token: Some("test-registration-token".to_string()),
+            jwks: None,
+        };
+
+        storage.store_client(&client).await.unwrap();
+
+        let auth_request = AuthorizationRequest {
+            response_type: vec![ResponseType::Code],
+            client_id: "test-client".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: Some("atproto".to_string()),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            login_hint: None,
+            nonce: None,
+        };
+
+        let auth_response = auth_server
+            .authorize(auth_request, "test-user".to_string(), None)
+            .await
+            .unwrap();
+        let redirect_url = match auth_response {
+            AuthorizeResponse::Redirect(url) => url,
+            _ => panic!("Expected redirect response"),
+        };
+        let code = Url::parse(&redirect_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .map(|(_, value)| value.to_string())
+            .unwrap();
+
+        let headers = HeaderMap::new();
+        let client_auth = Some(ClientAuthentication {
+            client_id: "test-client".to_string(),
+            client_secret: Some("test-secret".to_string()),
+            client_assertion: None,
+            client_assertion_type: None,
+        });
+
+        let token_response = auth_server
+            .token(
+                TokenRequest {
+                    grant_type: GrantType::AuthorizationCode,
+                    code: Some(code),
+                    redirect_uri: Some("https://example.com/callback".to_string()),
+                    code_verifier: None,
+                    refresh_token: None,
+                    device_code: None,
+                    client_id: Some("test-client".to_string()),
+                    client_secret: Some("test-secret".to_string()),
+                    scope: None,
+                    client_assertion: None,
+                    client_assertion_type: None,
+                },
+                &headers,
+                client_auth.clone(),
+            )
+            .await
+            .unwrap();
+
+        let mut expired_access_token = storage
+            .get_token_including_expired(&token_response.access_token)
+            .await
+            .unwrap()
+            .unwrap();
+        expired_access_token.expires_at = Utc::now() - chrono::Duration::minutes(1);
+        storage.store_token(&expired_access_token).await.unwrap();
+
+        assert!(
+            storage
+                .get_token(&token_response.access_token)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let refreshed_response = auth_server
+            .token(
+                TokenRequest {
+                    grant_type: GrantType::RefreshToken,
+                    code: None,
+                    redirect_uri: None,
+                    code_verifier: None,
+                    refresh_token: token_response.refresh_token,
+                    device_code: None,
+                    client_id: Some("test-client".to_string()),
+                    client_secret: Some("test-secret".to_string()),
+                    scope: None,
+                    client_assertion: None,
+                    client_assertion_type: None,
+                },
+                &headers,
+                client_auth,
+            )
+            .await
+            .unwrap();
+
+        assert!(!refreshed_response.access_token.is_empty());
+        assert!(refreshed_response.refresh_token.is_some());
+        let refreshed_token = storage
+            .get_token(&refreshed_response.access_token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed_token.session_iteration, Some(2));
+        assert_eq!(refreshed_token.user_id, Some("test-user".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_authorization_code_flow_with_permission_set_scope() {
         let storage = Arc::new(MemoryOAuthStorage::new());
         let supported_scopes = normalized_scopes(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+            "atproto include:tools.example.read?aud=did:web:api.example.com#appview",
         );
         let auth_server =
             AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
@@ -1332,7 +1459,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -1357,7 +1484,7 @@ mod tests {
             client_id: "test-client".to_string(),
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             state: Some("test-state".to_string()),
@@ -1385,7 +1512,7 @@ mod tests {
     async fn test_authorization_code_flow_with_permission_set_query_form_scope() {
         let storage = Arc::new(MemoryOAuthStorage::new());
         let supported_scopes = normalized_scopes(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+            "atproto include:tools.example.read?aud=did:web:api.example.com#appview",
         );
         let auth_server =
             AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
@@ -1399,7 +1526,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -1424,7 +1551,7 @@ mod tests {
             client_id: "test-client".to_string(),
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                "atproto include?nsid=tools.example.read&aud=did:web:api.example.com%23appview"
                     .to_string(),
             ),
             state: Some("test-state".to_string()),
@@ -1449,10 +1576,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_authorization_code_flow_rejects_permission_set_without_atproto_scope() {
+    async fn test_authorization_code_flow_accepts_permission_set_without_atproto_scope() {
         let storage = Arc::new(MemoryOAuthStorage::new());
         let supported_scopes = normalized_scopes(
-            "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview",
+            "atproto include:tools.example.read?aud=did:web:api.example.com#appview",
         );
         let auth_server =
             AuthorizationServer::new(storage.clone(), "https://localhost".to_string())
@@ -1466,7 +1593,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -1491,7 +1618,7 @@ mod tests {
             client_id: "test-client".to_string(),
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+                "include:tools.example.read?aud=did:web:api.example.com#appview".to_string(),
             ),
             state: Some("test-state".to_string()),
             code_challenge: None,
@@ -1500,13 +1627,17 @@ mod tests {
             nonce: None,
         };
 
-        let result = auth_server
+        let response = auth_server
             .authorize(auth_request, "test-user".to_string(), None)
-            .await;
+            .await
+            .unwrap();
 
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(matches!(error, OAuthError::InvalidScope(_)));
+        match response {
+            AuthorizeResponse::Redirect(url) => {
+                let parsed_url = Url::parse(&url).unwrap();
+                assert!(parsed_url.query_pairs().any(|(key, _)| key == "code"));
+            }
+            _ => panic!("Expected redirect response"),
         }
     }
 
@@ -1549,7 +1680,7 @@ mod tests {
             client_id: "test-client".to_string(),
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             state: Some("test-state".to_string()),

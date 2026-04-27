@@ -173,6 +173,15 @@ impl AccessTokenStore for PostgresOAuthStorage {
         self.access_token_store.get_token(token).await
     }
 
+    async fn get_token_including_expired(
+        &self,
+        token: &str,
+    ) -> Result<Option<crate::oauth::types::AccessToken>> {
+        self.access_token_store
+            .get_token_including_expired(token)
+            .await
+    }
+
     async fn revoke_token(&self, token: &str) -> Result<()> {
         self.access_token_store.revoke_token(token).await
     }

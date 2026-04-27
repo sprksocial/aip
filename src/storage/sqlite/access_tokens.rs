@@ -158,6 +158,16 @@ impl AccessTokenStore for SqliteAccessTokenStore {
         }
     }
 
+    async fn get_token_including_expired(&self, token_value: &str) -> Result<Option<AccessToken>> {
+        let row = sqlx::query("SELECT * FROM access_tokens WHERE token = ?")
+            .bind(token_value)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        row.map(|row| Self::row_to_access_token(&row)).transpose()
+    }
+
     async fn revoke_token(&self, token_value: &str) -> Result<()> {
         let result = sqlx::query("DELETE FROM access_tokens WHERE token = ?")
             .bind(token_value)

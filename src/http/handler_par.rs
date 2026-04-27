@@ -218,10 +218,6 @@ fn validate_and_convert_par_request(
             ));
         }
 
-        crate::oauth::scope_validation::validate_oauth_scope_requirements(
-            parsed_requested.known_scopes(),
-        )?;
-
         // Then, validate against client's allowed scopes
         if let Some(ref client_scope) = client.scope {
             let parsed_client = crate::oauth::scope_validation::parse_scope_set(client_scope)
@@ -681,7 +677,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -705,7 +701,7 @@ mod tests {
             client_secret: None,
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             state: Some("test-state".to_string()),
@@ -734,7 +730,7 @@ mod tests {
             atproto_oauth_signing_keys: Default::default(),
             oauth_signing_keys: Default::default(),
             oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             )
             .unwrap(),
@@ -763,7 +759,7 @@ mod tests {
         assert_eq!(
             auth_request.scope,
             Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
         );
@@ -779,7 +775,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -803,7 +799,7 @@ mod tests {
             client_secret: None,
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                "atproto include?nsid=tools.example.read&aud=did:web:api.example.com%23appview"
                     .to_string(),
             ),
             state: Some("test-state".to_string()),
@@ -832,7 +828,7 @@ mod tests {
             atproto_oauth_signing_keys: Default::default(),
             oauth_signing_keys: Default::default(),
             oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             )
             .unwrap(),
@@ -861,14 +857,14 @@ mod tests {
         assert_eq!(
             auth_request.scope,
             Some(
-                "atproto include?nsid=so.sprk.authFullApp&aud=did:web:api.sprk.so%23sprk_appview"
+                "atproto include?nsid=tools.example.read&aud=did:web:api.example.com%23appview"
                     .to_string(),
             ),
         );
     }
 
     #[test]
-    fn test_par_request_rejects_permission_set_without_required_atproto_scope() {
+    fn test_par_request_accepts_permission_set_without_atproto_scope() {
         let client = OAuthClient {
             client_id: "test-client".to_string(),
             client_secret: Some("test-secret".to_string()),
@@ -877,7 +873,7 @@ mod tests {
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
             scope: Some(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             ),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
@@ -901,7 +897,7 @@ mod tests {
             client_secret: None,
             redirect_uri: "https://example.com/callback".to_string(),
             scope: Some(
-                "include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview".to_string(),
+                "include:tools.example.read?aud=did:web:api.example.com#appview".to_string(),
             ),
             state: Some("test-state".to_string()),
             code_challenge: None,
@@ -929,7 +925,7 @@ mod tests {
             atproto_oauth_signing_keys: Default::default(),
             oauth_signing_keys: Default::default(),
             oauth_supported_scopes: crate::config::OAuthSupportedScopes::try_from(
-                "atproto include:so.sprk.authFullApp?aud=did:web:api.sprk.so#sprk_appview"
+                "atproto include:tools.example.read?aud=did:web:api.example.com#appview"
                     .to_string(),
             )
             .unwrap(),
@@ -952,11 +948,13 @@ mod tests {
                 .unwrap(),
         };
 
-        let result = validate_and_convert_par_request(&par_request, &client, &test_config);
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(matches!(error, OAuthError::InvalidScope(_)));
-        }
+        let auth_request =
+            validate_and_convert_par_request(&par_request, &client, &test_config).unwrap();
+
+        assert_eq!(
+            auth_request.scope,
+            Some("include:tools.example.read?aud=did:web:api.example.com#appview".to_string())
+        );
     }
 
     #[test]
