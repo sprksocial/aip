@@ -40,6 +40,10 @@ pub enum ConfigError {
     /// Error when OAuth scopes don't meet requirements
     #[error("error-aip-config-8 Invalid scope configuration: {0}")]
     InvalidScope(String),
+
+    /// Error when URL configuration is invalid
+    #[error("error-aip-config-9 Invalid URL for {0}: {1}")]
+    InvalidUrl(String, String),
 }
 
 /// HTTP server errors

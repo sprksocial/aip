@@ -73,6 +73,10 @@ pub struct AtprotoClientTos(Option<String>);
 #[derive(Clone)]
 pub struct AtprotoClientPolicy(Option<String>);
 
+/// ATProtocol OAuth authorization server used when no login_hint is provided.
+#[derive(Clone)]
+pub struct AtprotoSignupAuthorizationServer(String);
+
 /// Internal device authorization client configuration
 #[derive(Clone)]
 pub struct InternalDeviceAuthClientId(String);
@@ -106,6 +110,7 @@ pub struct Config {
     pub atproto_client_logo: AtprotoClientLogo,
     pub atproto_client_tos: AtprotoClientTos,
     pub atproto_client_policy: AtprotoClientPolicy,
+    pub atproto_signup_authorization_server: AtprotoSignupAuthorizationServer,
     pub internal_device_auth_client_id: InternalDeviceAuthClientId,
 }
 
@@ -156,6 +161,8 @@ impl Config {
         let atproto_client_tos: AtprotoClientTos = optional_env("ATPROTO_CLIENT_TOS").try_into()?;
         let atproto_client_policy: AtprotoClientPolicy =
             optional_env("ATPROTO_CLIENT_POLICY").try_into()?;
+        let atproto_signup_authorization_server: AtprotoSignupAuthorizationServer =
+            default_env("ATPROTO_SIGNUP_AUTHORIZATION_SERVER", "https://bsky.social").try_into()?;
         let internal_device_auth_client_id: InternalDeviceAuthClientId =
             default_env("INTERNAL_DEVICE_AUTH_CLIENT_ID", "aip-internal-device-auth").try_into()?;
 
@@ -186,6 +193,7 @@ impl Config {
             atproto_client_logo,
             atproto_client_tos,
             atproto_client_policy,
+            atproto_signup_authorization_server,
             internal_device_auth_client_id,
         })
     }
@@ -588,6 +596,21 @@ mod tests {
         );
         assert!(scopes.normalized_strings().contains(EXAMPLE_PERMISSION_SET));
     }
+
+    #[test]
+    fn test_atproto_signup_authorization_server_accepts_url() {
+        let value =
+            AtprotoSignupAuthorizationServer::try_from("https://bsky.social".to_string()).unwrap();
+
+        assert_eq!(value.as_ref(), "https://bsky.social");
+    }
+
+    #[test]
+    fn test_atproto_signup_authorization_server_rejects_invalid_url() {
+        let result = AtprotoSignupAuthorizationServer::try_from("bsky.social".to_string());
+
+        assert!(result.is_err());
+    }
 }
 
 impl AsRef<String> for AtprotoClientName {
@@ -634,6 +657,34 @@ impl TryFrom<Option<String>> for AtprotoClientPolicy {
 
 impl AsRef<Option<String>> for AtprotoClientPolicy {
     fn as_ref(&self) -> &Option<String> {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for AtprotoSignupAuthorizationServer {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let parsed = url::Url::parse(&value).map_err(|_| {
+            ConfigError::InvalidUrl(
+                "ATPROTO_SIGNUP_AUTHORIZATION_SERVER".to_string(),
+                value.clone(),
+            )
+        })?;
+
+        match parsed.scheme() {
+            "http" | "https" if parsed.host_str().is_some() => Ok(Self(value)),
+            _ => Err(ConfigError::InvalidUrl(
+                "ATPROTO_SIGNUP_AUTHORIZATION_SERVER".to_string(),
+                value,
+            )
+            .into()),
+        }
+    }
+}
+
+impl AsRef<String> for AtprotoSignupAuthorizationServer {
+    fn as_ref(&self) -> &String {
         &self.0
     }
 }

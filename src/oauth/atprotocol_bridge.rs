@@ -131,6 +131,8 @@ pub struct AtpBackedAuthorizationServer {
     authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
     /// External base URL for callbacks
     external_base: String,
+    /// ATProtocol OAuth authorization server used when login_hint is intentionally blank.
+    signup_authorization_server: String,
 }
 
 impl AtpBackedAuthorizationServer {
@@ -145,6 +147,7 @@ impl AtpBackedAuthorizationServer {
         document_storage: Arc<dyn atproto_identity::traits::DidDocumentStorage + Send + Sync>,
         authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
         external_base: String,
+        signup_authorization_server: String,
     ) -> Self {
         Self {
             base_auth_server,
@@ -156,6 +159,7 @@ impl AtpBackedAuthorizationServer {
             document_storage,
             authorization_request_storage,
             external_base,
+            signup_authorization_server,
         }
     }
 
@@ -196,7 +200,7 @@ impl AtpBackedAuthorizationServer {
     pub async fn authorize_with_atprotocol(
         &self,
         request: AuthorizationRequest,
-        atpoauth_subject: String,
+        atpoauth_subject: Option<String>,
     ) -> Result<String, OAuthError> {
         // Validate the OAuth request first (client validation, etc.)
         self.validate_oauth_request(&request).await?;
@@ -205,134 +209,140 @@ impl AtpBackedAuthorizationServer {
         let session_id = Ulid::new().to_string();
         let atpoauth_state = Uuid::new_v4().to_string();
 
-        // Resolve the subject to get DID and authorization server endpoint
-        let (did_option, authorization_server_endpoint) = if atpoauth_subject
-            .starts_with("https://")
-        {
-            // First, try the HTTPS URL as an authorization server directly
-            match oauth_authorization_server(&self.http_client, &atpoauth_subject).await {
-                Ok(_) => {
-                    // URL is a valid authorization server, use it directly
-                    (None, atpoauth_subject.clone())
-                }
-                Err(_) => {
-                    // URL is not a valid authorization server, try extracting hostname as handle
-                    let hostname = match url::Url::parse(&atpoauth_subject) {
-                        Ok(url) => url.host_str().map(|h| h.to_string()),
-                        Err(_) => None,
-                    };
+        // Resolve the subject to get DID and authorization server endpoint.
+        // When the subject is intentionally absent, the ATProtocol auth server can
+        // choose an account or offer signup without a login_hint.
+        let (did_option, authorization_server_endpoint) = match atpoauth_subject.as_deref() {
+            None => (None, self.signup_authorization_server.clone()),
+            Some(atpoauth_subject) if atpoauth_subject.starts_with("https://") => {
+                // First, try the HTTPS URL as an authorization server directly
+                match oauth_authorization_server(&self.http_client, atpoauth_subject).await {
+                    Ok(_) => {
+                        // URL is a valid authorization server, use it directly
+                        (None, atpoauth_subject.to_string())
+                    }
+                    Err(_) => {
+                        // URL is not a valid authorization server, try extracting hostname as handle
+                        let hostname = match url::Url::parse(atpoauth_subject) {
+                            Ok(url) => url.host_str().map(|h| h.to_string()),
+                            Err(_) => None,
+                        };
 
-                    match hostname {
-                        Some(host) => {
-                            // Try to resolve the hostname as a handle
-                            match self.identity_resolver.resolve(&host).await {
-                                Ok(doc) => {
-                                    // Store the resolved document
-                                    self.document_storage
-                                        .store_document(doc.clone())
-                                        .await
-                                        .map_err(|e| {
-                                            OAuthError::ServerError(format!(
-                                                "Failed to store resolved document: {:?}",
-                                                e
-                                            ))
-                                        })?;
+                        match hostname {
+                            Some(host) => {
+                                // Try to resolve the hostname as a handle
+                                match self.identity_resolver.resolve(&host).await {
+                                    Ok(doc) => {
+                                        // Store the resolved document
+                                        self.document_storage
+                                            .store_document(doc.clone())
+                                            .await
+                                            .map_err(|e| {
+                                                OAuthError::ServerError(format!(
+                                                    "Failed to store resolved document: {:?}",
+                                                    e
+                                                ))
+                                            })?;
 
-                                    // Get PDS endpoint and authorization server
-                                    let pds_endpoint = doc.pds_endpoints().first().ok_or_else(|| {
-                                        OAuthError::AuthorizationFailed(format!(
-                                            "URL '{}' is not a valid PDS and hostname '{}' has no PDS endpoint",
+                                        // Get PDS endpoint and authorization server
+                                        let pds_endpoint =
+                                            doc.pds_endpoints().first().ok_or_else(|| {
+                                                OAuthError::AuthorizationFailed(format!(
+                                                    "URL '{}' is not a valid PDS and hostname '{}' has no PDS endpoint",
+                                                    atpoauth_subject, host
+                                                ))
+                                            })?.to_string();
+
+                                        let protected =
+                                            oauth_protected_resource(&self.http_client, &pds_endpoint)
+                                                .await
+                                                .map_err(|_| {
+                                                    OAuthError::AuthorizationFailed(format!(
+                                                        "URL '{}' is not a valid PDS and hostname '{}' PDS has no protected resource metadata",
+                                                        atpoauth_subject, host
+                                                    ))
+                                                })?;
+
+                                        let auth_server = protected
+                                            .authorization_servers
+                                            .first()
+                                            .ok_or_else(|| {
+                                                OAuthError::AuthorizationFailed(format!(
+                                                    "URL '{}' is not a valid PDS and hostname '{}' PDS has no authorization server",
+                                                    atpoauth_subject, host
+                                                ))
+                                            })?
+                                            .to_string();
+
+                                        (Some(doc.id.clone()), auth_server)
+                                    }
+                                    Err(_) => {
+                                        return Err(OAuthError::AuthorizationFailed(format!(
+                                            "URL '{}' is not a valid authorization server and hostname '{}' could not be resolved as a handle",
                                             atpoauth_subject, host
-                                        ))
-                                    })?.to_string();
-
-                                    let protected = oauth_protected_resource(
-                                        &self.http_client,
-                                        &pds_endpoint,
-                                    )
-                                    .await
-                                    .map_err(|_| {
-                                        OAuthError::AuthorizationFailed(format!(
-                                            "URL '{}' is not a valid PDS and hostname '{}' PDS has no protected resource metadata",
-                                            atpoauth_subject, host
-                                        ))
-                                    })?;
-
-                                    let auth_server = protected
-                                        .authorization_servers
-                                        .first()
-                                        .ok_or_else(|| {
-                                            OAuthError::AuthorizationFailed(format!(
-                                                "URL '{}' is not a valid PDS and hostname '{}' PDS has no authorization server",
-                                                atpoauth_subject, host
-                                            ))
-                                        })?
-                                        .to_string();
-
-                                    (Some(doc.id.clone()), auth_server)
-                                }
-                                Err(_) => {
-                                    return Err(OAuthError::AuthorizationFailed(format!(
-                                        "URL '{}' is not a valid authorization server and hostname '{}' could not be resolved as a handle",
-                                        atpoauth_subject, host
-                                    )));
+                                        )));
+                                    }
                                 }
                             }
-                        }
-                        None => {
-                            return Err(OAuthError::AuthorizationFailed(format!(
-                                "URL '{}' is not a valid authorization server and has no hostname",
-                                atpoauth_subject
-                            )));
+                            None => {
+                                return Err(OAuthError::AuthorizationFailed(format!(
+                                    "URL '{}' is not a valid authorization server and has no hostname",
+                                    atpoauth_subject
+                                )));
+                            }
                         }
                     }
                 }
             }
-        } else {
-            let atpoauth_document = self
-                .identity_resolver
-                .resolve(&atpoauth_subject)
-                .await
-                .map_err(|e| {
-                    OAuthError::AuthorizationFailed(format!(
-                        "Failed to resolve subject '{}': {:?}",
-                        atpoauth_subject, e
-                    ))
-                })?;
+            Some(atpoauth_subject) => {
+                let atpoauth_document = self
+                    .identity_resolver
+                    .resolve(atpoauth_subject)
+                    .await
+                    .map_err(|e| {
+                        OAuthError::AuthorizationFailed(format!(
+                            "Failed to resolve subject '{}': {:?}",
+                            atpoauth_subject, e
+                        ))
+                    })?;
 
-            // Store the resolved document for later use
-            self.document_storage
-                .store_document(atpoauth_document.clone())
-                .await
-                .map_err(|e| {
-                    OAuthError::ServerError(format!("Failed to store resolved document: {:?}", e))
-                })?;
+                // Store the resolved document for later use
+                self.document_storage
+                    .store_document(atpoauth_document.clone())
+                    .await
+                    .map_err(|e| {
+                        OAuthError::ServerError(format!(
+                            "Failed to store resolved document: {:?}",
+                            e
+                        ))
+                    })?;
 
-            let pds_endpoint = match atpoauth_document.pds_endpoints().first() {
-                Some(value) => value.to_string(),
-                None => {
-                    return Err(OAuthError::AuthorizationFailed(
-                        "No PDS endpoint found".to_string(),
-                    ));
-                }
-            };
-
-            let protected_resource =
-                match oauth_protected_resource(&self.http_client, &pds_endpoint).await {
-                    Ok(value) => value,
-                    _ => {
+                let pds_endpoint = match atpoauth_document.pds_endpoints().first() {
+                    Some(value) => value.to_string(),
+                    None => {
                         return Err(OAuthError::AuthorizationFailed(
-                            "No oauth protected resource found".to_string(),
+                            "No PDS endpoint found".to_string(),
                         ));
                     }
                 };
 
-            match protected_resource.authorization_servers.first() {
-                Some(value) => (Some(atpoauth_document.id.clone()), value.to_string()),
-                None => {
-                    return Err(OAuthError::AuthorizationFailed(
-                        "No authorization server found".to_string(),
-                    ));
+                let protected_resource =
+                    match oauth_protected_resource(&self.http_client, &pds_endpoint).await {
+                        Ok(value) => value,
+                        _ => {
+                            return Err(OAuthError::AuthorizationFailed(
+                                "No oauth protected resource found".to_string(),
+                            ));
+                        }
+                    };
+
+                match protected_resource.authorization_servers.first() {
+                    Some(value) => (Some(atpoauth_document.id.clone()), value.to_string()),
+                    None => {
+                        return Err(OAuthError::AuthorizationFailed(
+                            "No authorization server found".to_string(),
+                        ));
+                    }
                 }
             }
         };
@@ -435,11 +445,9 @@ impl AtpBackedAuthorizationServer {
             scope: filtered_scope,
         };
 
-        let login_hint = if atpoauth_subject.starts_with("https://") {
-            None
-        } else {
-            Some(atpoauth_subject.as_str())
-        };
+        let login_hint = atpoauth_subject
+            .as_deref()
+            .filter(|subject| !subject.starts_with("https://"));
 
         // Use atproto-oauth workflow to initiate the flow
         let atpoauth_par_response = oauth_init(
@@ -1047,6 +1055,7 @@ mod tests {
             document_storage,
             authorization_request_storage,
             "https://localhost".to_string(),
+            "https://bsky.social".to_string(),
         )
     }
 
@@ -1183,7 +1192,7 @@ mod tests {
 
         // This will fail because the client doesn't exist, but tests the flow
         let result = server
-            .authorize_with_atprotocol(request, "alice.bsky.social".to_string())
+            .authorize_with_atprotocol(request, Some("alice.bsky.social".to_string()))
             .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OAuthError::InvalidClient(_)));
@@ -1239,7 +1248,7 @@ mod tests {
         // Test that validation passes (the actual ATProtocol OAuth will fail in tests,
         // but we can test that our validation logic is working correctly)
         let result = server
-            .authorize_with_atprotocol(request, "alice.bsky.social".to_string())
+            .authorize_with_atprotocol(request, Some("alice.bsky.social".to_string()))
             .await;
 
         // The test environment doesn't have real ATProtocol OAuth servers, so this will fail

@@ -54,6 +54,9 @@ export LOG_LEVEL=info
 export CLIENT_DEFAULT_ACCESS_TOKEN_EXPIRATION=1d   # Default access token lifetime
 export CLIENT_DEFAULT_REFRESH_TOKEN_EXPIRATION=14d # Default refresh token lifetime
 
+# ATProtocol OAuth signup
+export ATPROTO_SIGNUP_AUTHORIZATION_SERVER=https://bsky.social # Used when login_hint is blank
+
 # Admin Configuration
 export ADMIN_DIDS=did:plc:admin1,did:plc:admin2    # Comma-separated list of admin DIDs
 ```

@@ -7,12 +7,12 @@
 {% block content %}
 <header>
     <h1>Sign In</h1>
-    <p>Please enter your ATProtocol handle or DID to continue with OAuth authorization</p>
+    <p>Enter an ATProtocol handle or DID, or continue without one to sign up.</p>
 </header>
 <main>
     <section>
         <article>
-            <h3>Enter Your Identity</h3>
+            <h3>Choose Your Identity</h3>
             <form method="GET" action="/oauth/authorize">
                 {% for key in query_params %}
                     {% if key != "login_hint" %}
@@ -27,12 +27,11 @@
                         id="login_hint" 
                         name="login_hint" 
                         placeholder="user.bsky.social or did:plc:..." 
-                        required
-                        title="Enter a handle (e.g., user.bsky.social) or DID (e.g., did:plc:...)"
+                        title="Enter a handle (e.g., user.bsky.social), DID (e.g., did:plc:...), or leave blank to sign up"
                     >
                 </label>
                 <small>
-                    Enter your handle (like <code>user.bsky.social</code>) or DID (like <code>did:plc:xyz123...</code>)
+                    Enter your handle (like <code>user.bsky.social</code>) or DID (like <code>did:plc:xyz123...</code>), or leave this blank to sign up.
                 </small>
                 
                 <button type="submit">Continue</button>

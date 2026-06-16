@@ -63,6 +63,11 @@ pub async fn create_atp_backed_server(
         state.document_storage.clone(),
         state.authorization_request_storage.clone(),
         state.config.external_base.clone(),
+        state
+            .config
+            .atproto_signup_authorization_server
+            .as_ref()
+            .clone(),
     ))
 }
 
@@ -491,6 +496,10 @@ mod tests {
             atproto_client_logo: None::<String>.try_into().unwrap(),
             atproto_client_tos: None::<String>.try_into().unwrap(),
             atproto_client_policy: None::<String>.try_into().unwrap(),
+            atproto_signup_authorization_server: "https://bsky.social"
+                .to_string()
+                .try_into()
+                .unwrap(),
             internal_device_auth_client_id: "aip-internal-device-auth"
                 .to_string()
                 .try_into()
@@ -577,6 +586,10 @@ mod tests {
             atproto_client_logo: None::<String>.try_into().unwrap(),
             atproto_client_tos: None::<String>.try_into().unwrap(),
             atproto_client_policy: None::<String>.try_into().unwrap(),
+            atproto_signup_authorization_server: "https://bsky.social"
+                .to_string()
+                .try_into()
+                .unwrap(),
             internal_device_auth_client_id: "aip-internal-device-auth"
                 .to_string()
                 .try_into()

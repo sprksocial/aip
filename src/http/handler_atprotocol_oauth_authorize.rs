@@ -49,9 +49,15 @@ pub async fn handle_oauth_authorize(
                 .cloned()
         }
     };
+    let blank_login_hint_submitted = original_query
+        .login_hint
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty());
+    let is_app_password_prompt = original_query.prompt.as_deref() == Some("app-password");
 
-    // Check if login_hint is missing - if so, render login form
-    if login_hint.is_none() {
+    // Check if login_hint is missing - if so, render login form. An explicitly blank
+    // login_hint is allowed through so the ATProtocol OAuth server can offer signup.
+    if login_hint.is_none() && (!blank_login_hint_submitted || is_app_password_prompt) {
         return render_login_form(state, &original_query, &request).await;
     }
 
@@ -65,7 +71,7 @@ pub async fn handle_oauth_authorize(
     })?;
 
     match atp_auth_server
-        .authorize_with_atprotocol(request, login_hint.unwrap())
+        .authorize_with_atprotocol(request, login_hint)
         .await
     {
         Ok(redirect_url) => Ok(Redirect::to(&redirect_url).into_response()),
@@ -365,6 +371,10 @@ mod tests {
             atproto_client_logo: None::<String>.try_into().unwrap(),
             atproto_client_tos: None::<String>.try_into().unwrap(),
             atproto_client_policy: None::<String>.try_into().unwrap(),
+            atproto_signup_authorization_server: "https://bsky.social"
+                .to_string()
+                .try_into()
+                .unwrap(),
             internal_device_auth_client_id: "aip-internal-device-auth"
                 .to_string()
                 .try_into()
@@ -437,6 +447,37 @@ mod tests {
         assert_eq!(request.client_id, "test-client");
         assert_eq!(request.code_challenge, Some("test-challenge".to_string()));
         assert_eq!(request.code_challenge_method, Some("S256".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_query_preserves_blank_login_hint_submission() {
+        let storage = Arc::new(crate::storage::inmemory::MemoryOAuthStorage::new());
+
+        let query = AuthorizeQuery {
+            client_id: "test-client".to_string(),
+            redirect_uri: Some("https://example.com/callback".to_string()),
+            response_type: Some("code".to_string()),
+            scope: Some("atproto".to_string()),
+            state: Some("test-state".to_string()),
+            code_challenge: None,
+            code_challenge_method: None,
+            request_uri: None,
+            login_hint: Some("  ".to_string()),
+            nonce: None,
+            prompt: None,
+        };
+
+        let config = create_test_config();
+        let (request, original_query) = process_authorization_query(
+            query,
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert!(request.login_hint.is_none());
+        assert_eq!(original_query.login_hint, Some("  ".to_string()));
     }
 
     #[tokio::test]
